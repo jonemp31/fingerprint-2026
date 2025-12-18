@@ -182,14 +182,19 @@ func (h *ConverterHandler) Convert(c fiber.Ctx) error {
 	mediaSubdir := getMediaSubdir(req.MediaType)
 	mediaCacheDir := filepath.Join(h.cacheDir, mediaSubdir)
 
+	log.Printf("📁 Creating directory: %s", mediaCacheDir)
+
 	// Ensure media subdirectory exists
 	if err := os.MkdirAll(mediaCacheDir, 0755); err != nil {
+		log.Printf("❌ Failed to create directory %s: %v", mediaCacheDir, err)
 		return c.Status(fiber.StatusInternalServerError).JSON(models.ErrorResponse{
 			Success: false,
 			Error:   "Failed to create media cache directory",
 			Details: err.Error(),
 		})
 	}
+
+	log.Printf("✅ Directory ready: %s", mediaCacheDir)
 
 	// Generate output path in media-specific subdirectory
 	var outputPath string

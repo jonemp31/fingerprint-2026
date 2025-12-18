@@ -44,12 +44,12 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /build/fingerprint-converter .
 
-# Create cache directory
-RUN mkdir -p /tmp/media-cache && \
-    chown -R appuser:appuser /app /tmp/media-cache
+# Create cache directory with proper permissions
+RUN mkdir -p /data/fingerprintconverter && \
+    chown -R appuser:appuser /app /data/fingerprintconverter
 
-# Use tmpfs for cache (mounted at runtime)
-VOLUME ["/tmp/media-cache"]
+# Declare volume for persistent storage
+VOLUME ["/data/fingerprintconverter"]
 
 # Environment variables
 ENV PORT=5001 \
@@ -61,7 +61,7 @@ ENV PORT=5001 \
     BUFFER_SIZE=10485760 \
     REQUEST_TIMEOUT=5m \
     BODY_LIMIT=524288000 \
-    CACHE_DIR=/tmp/media-cache \
+    CACHE_DIR=/data/fingerprintconverter \
     CACHE_TTL=28m \
     FILE_TTL=30m \
     ENABLE_CACHE=true \
