@@ -77,6 +77,9 @@ func (h *ConverterHandler) Convert(c fiber.Ctx) error {
 		})
 	}
 
+	// Check if download mode is enabled (query param ?download=true)
+	downloadMode := c.Query("download") == "true"
+
 	// Validate required fields
 	if req.DeviceID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(models.ErrorResponse{
@@ -122,6 +125,12 @@ func (h *ConverterHandler) Convert(c fiber.Ctx) error {
 			log.Printf("✅ CACHE HIT: device=%s, url=%s, path=%s",
 				req.DeviceID, truncateURL(req.URL), cachedEntry.ProcessedPath)
 
+			// If download mode, return file stream
+			if downloadMode {
+				return h.sendFile(c, cachedEntry.ProcessedPath, cachedEntry.MediaType)
+			}
+
+			// Otherwise return JSON
 			return c.JSON(models.ConvertResponse{
 				Success:        true,
 				ProcessedPath:  cachedEntry.ProcessedPath,
@@ -247,6 +256,12 @@ func (h *ConverterHandler) Convert(c fiber.Ctx) error {
 		req.DeviceID, req.MediaType, req.AntiFingerprintLevel,
 		originalSize, processedSize, sizeIncrease, time.Since(processingStart).Milliseconds())
 
+	// If download mode, return file stream
+	if downloadMode {
+		return h.sendFile(c, outputPath, req.MediaType)
+	}
+
+	// Otherwise return JSON
 	return c.JSON(models.ConvertResponse{
 		Success:        true,
 		ProcessedPath:  outputPath,
@@ -333,4 +348,38 @@ func truncateURL(url string) string {
 		return url[:57] + "..."
 	}
 	return url
+}
+
+// sendFile streams file to client with appropriate content type
+func (h *ConverterHandler) sendFile(c fiber.Ctx, filePath, mediaType string) error {
+	// Set appropriate content type
+	var contentType string
+	var fileName string
+
+	switch mediaType {
+	case "audio":
+		contentType = "audio/ogg"
+		fileName = filepath.Base(filePath)
+	case "image":
+		// Detect if JPEG or PNG
+		if strings.HasSuffix(filePath, ".jpg") || strings.HasSuffix(filePath, ".jpeg") {
+			contentType = "image/jpeg"
+		} else {
+			contentType = "image/png"
+		}
+		fileName = filepath.Base(filePath)
+	case "video":
+		contentType = "video/mp4"
+		fileName = filepath.Base(filePath)
+	default:
+		contentType = "application/octet-stream"
+		fileName = filepath.Base(filePath)
+	}
+
+	// Set headers
+	c.Set("Content-Type", contentType)
+	c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
+
+	// Send file
+	return c.SendFile(filePath)
 }
