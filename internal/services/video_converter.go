@@ -96,7 +96,7 @@ func (vc *VideoConverter) Convert(ctx context.Context, inputData []byte, level s
 		"-preset", params.preset,
 		"-g", strconv.Itoa(params.keyframeInterval),
 		"-bf", "2", // B-frames
-		"-movflags", "+faststart", // Optimize for streaming
+		"-movflags", "frag_keyframe+empty_moov+default_base_moof", // Enable streaming for pipe output
 	)
 
 	// Audio settings (copy or re-encode depending on level)
@@ -148,17 +148,17 @@ func (vc *VideoConverter) Convert(ctx context.Context, inputData []byte, level s
 }
 
 type videoParams struct {
-	bitrate           int
-	crf               int
-	preset            string
-	keyframeInterval  int
-	addNoise          bool
-	noiseStrength     int
-	colorAdjust       bool
-	brightness        float64
-	contrast          float64
-	saturation        float64
-	addTimestamp      bool
+	bitrate          int
+	crf              int
+	preset           string
+	keyframeInterval int
+	addNoise         bool
+	noiseStrength    int
+	colorAdjust      bool
+	brightness       float64
+	contrast         float64
+	saturation       float64
+	addTimestamp     bool
 }
 
 func (vc *VideoConverter) getRandomizedParams(level string, originalBitrate int) videoParams {
@@ -174,17 +174,17 @@ func (vc *VideoConverter) getRandomizedParams(level string, originalBitrate int)
 		// Minimal randomization (recommended for video)
 		bitrateVariation := int(float64(originalBitrate) * (0.05 + float64(rand.Intn(6))/100.0)) // 5-10%
 		params.bitrate = originalBitrate + bitrateVariation - rand.Intn(bitrateVariation*2)
-		params.crf = 22 + rand.Intn(3)              // 22-24
+		params.crf = 22 + rand.Intn(3)                // 22-24
 		params.keyframeInterval = 240 + rand.Intn(21) // 240-260
 
 	case "moderate":
 		// Moderate randomization
 		bitrateVariation := int(float64(originalBitrate) * (0.08 + float64(rand.Intn(5))/100.0)) // 8-12%
 		params.bitrate = originalBitrate + bitrateVariation - rand.Intn(bitrateVariation*2)
-		params.crf = 22 + rand.Intn(4)              // 22-25
+		params.crf = 22 + rand.Intn(4)                // 22-25
 		params.keyframeInterval = 230 + rand.Intn(41) // 230-270
 		params.addNoise = true
-		params.noiseStrength = 1 + rand.Intn(2)     // 1-2
+		params.noiseStrength = 1 + rand.Intn(2) // 1-2
 		params.colorAdjust = true
 		params.brightness = float64(rand.Intn(3)-1) / 1000.0     // ±0.001
 		params.contrast = 1.0 + float64(rand.Intn(3)-1)/1000.0   // ±0.001
@@ -194,11 +194,11 @@ func (vc *VideoConverter) getRandomizedParams(level string, originalBitrate int)
 		// Maximum randomization
 		bitrateVariation := int(float64(originalBitrate) * (0.10 + float64(rand.Intn(6))/100.0)) // 10-15%
 		params.bitrate = originalBitrate + bitrateVariation - rand.Intn(bitrateVariation*2)
-		params.crf = 21 + rand.Intn(5)              // 21-25
-		params.keyframeInterval = 220 + rand.Intn(61) // 220-280
+		params.crf = 21 + rand.Intn(5)                                     // 21-25
+		params.keyframeInterval = 220 + rand.Intn(61)                      // 220-280
 		params.preset = []string{"fast", "medium", "medium"}[rand.Intn(3)] // Vary preset
 		params.addNoise = true
-		params.noiseStrength = 2 + rand.Intn(4)     // 2-5
+		params.noiseStrength = 2 + rand.Intn(4) // 2-5
 		params.colorAdjust = true
 		params.brightness = float64(rand.Intn(5)-2) / 1000.0     // ±0.002
 		params.contrast = 1.0 + float64(rand.Intn(5)-2)/1000.0   // ±0.002
