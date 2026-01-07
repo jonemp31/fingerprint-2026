@@ -96,7 +96,7 @@ func (vc *VideoConverter) Convert(ctx context.Context, inputData []byte, level s
 		"-preset", params.preset,
 		"-g", strconv.Itoa(params.keyframeInterval),
 		"-bf", "2", // B-frames
-		"-movflags", "frag_keyframe+empty_moov+default_base_moof", // Enable streaming for pipe output
+		"-movflags", "+faststart", // WhatsApp compatibility - moov atom at start
 	)
 
 	// Audio settings (copy or re-encode depending on level)
@@ -221,7 +221,7 @@ func (vc *VideoConverter) ConvertWithScriptTechniques(ctx context.Context, input
 		// Metadata in title field (more portable)
 		"-map_metadata", "-1",
 		"-metadata", "title="+uniqueTitle,
-		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+		"-movflags", "+faststart", // WhatsApp compatibility - moov atom at start
 		"-f", "mp4",
 		"-threads", "0",
 		"pipe:1",
