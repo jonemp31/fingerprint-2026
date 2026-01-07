@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -13,11 +14,11 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/logger"
 	"github.com/gofiber/fiber/v3/middleware/recover"
 
-	"fingerprint-converter/internal/cache"
 	"fingerprint-converter/internal/config"
 	"fingerprint-converter/internal/handlers"
 	"fingerprint-converter/internal/pool"
 	"fingerprint-converter/internal/services"
+	"fingerprint-converter/internal/storage"
 )
 
 func main() {
@@ -31,11 +32,11 @@ func main() {
 
 	// Set runtime optimizations
 	runtime.GOMAXPROCS(runtime.NumCPU())
-	log.Printf("⚙️  GOMAXPROCS=%d, GOGC=%d, GOMEMLIMIT=%s", 
+	log.Printf("⚙️  GOMAXPROCS=%d, GOGC=%d, GOMEMLIMIT=%s",
 		runtime.NumCPU(), cfg.GOGC, cfg.GoMemLimit)
 
 	// Initialize buffer pool
-	log.Printf("📦 Initializing buffer pool: count=%d, size=%d bytes", 
+	log.Printf("📦 Initializing buffer pool: count=%d, size=%d bytes",
 		cfg.BufferPoolSize, cfg.BufferSize)
 	bufferPool := pool.NewBufferPool(cfg.BufferPoolSize, cfg.BufferSize)
 
@@ -46,18 +47,6 @@ func main() {
 		log.Fatalf("❌ Failed to start worker pool: %v", err)
 	}
 
-	// Initialize device cache
-	var deviceCache *cache.DeviceCache
-	if cfg.EnableCache {
-		log.Printf("💾 Initializing device cache: dir=%s, cacheTTL=%v, fileTTL=%v",
-			cfg.CacheDir, cfg.CacheTTL, cfg.FileTTL)
-		deviceCache = cache.NewDeviceCache(cfg.CacheDir, cfg.CacheTTL, cfg.FileTTL)
-	} else {
-		log.Println("⚠️  Cache disabled")
-		// Create dummy cache with 0 TTL
-		deviceCache = cache.NewDeviceCache(cfg.CacheDir, 0, 0)
-	}
-
 	// Initialize downloader
 	downloader := services.NewDownloader(bufferPool, cfg.MaxDownloadSize, cfg.DownloadTimeout)
 
@@ -66,17 +55,25 @@ func main() {
 	imageConverter := services.NewImageConverter(workerPool, bufferPool)
 	videoConverter := services.NewVideoConverter(workerPool, bufferPool)
 
-	// Initialize handler
-	converterHandler := handlers.NewConverterHandler(
+	// Initialize temp storage (10 minutes TTL)
+	tempStorageDir := filepath.Join(cfg.CacheDir, "temp")
+	tempStorage := storage.NewTempStorage(tempStorageDir, 10*time.Minute)
+
+	// Get base URL for file serving
+	baseURL := os.Getenv("BASE_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:4000"
+	}
+
+	// Initialize process handler
+	processHandler := handlers.NewProcessHandler(
 		audioConverter,
 		imageConverter,
 		videoConverter,
 		downloader,
-		deviceCache,
-		workerPool,
-		bufferPool,
+		tempStorage,
+		baseURL,
 		cfg.RequestTimeout,
-		cfg.CacheDir,
 	)
 
 	// Create Fiber app
@@ -97,8 +94,8 @@ func main() {
 			}
 
 			return c.Status(code).JSON(fiber.Map{
-				"success": false,
-				"error":   message,
+				"success":   false,
+				"error":     message,
 				"timestamp": time.Now().Unix(),
 			})
 		},
@@ -106,7 +103,7 @@ func main() {
 
 	// Middleware
 	app.Use(recover.New())
-	
+
 	if cfg.EnableCORS {
 		app.Use(cors.New(cors.Config{
 			AllowOrigins: []string{"*"},
@@ -124,28 +121,24 @@ func main() {
 	// Routes
 	api := app.Group("/api")
 
-	// Conversion endpoint
-	api.Post("/convert", converterHandler.Convert)
-
-	// Cache stats
-	api.Get("/cache/stats", converterHandler.GetCacheStats)
-	api.Get("/cache/stats/:deviceID", converterHandler.GetCacheStats)
+	// Processing endpoint
+	api.Post("/process", processHandler.Process)
+	api.Get("/files/:id", processHandler.GetFile)
 
 	// Health check
 	if cfg.EnableHealthCheck {
-		api.Get("/health", converterHandler.Health)
+		api.Get("/health", processHandler.Health)
 	}
 
 	// Root endpoint
 	app.Get("/", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{
-			"service":  "Fingerprint Media Converter API",
-			"version":  "1.0.0",
-			"status":   "running",
+			"service": "Fingerprint Media Converter API",
+			"version": "1.0.0",
+			"status":  "running",
 			"endpoints": []string{
-				"POST /api/convert",
-				"GET  /api/cache/stats",
-				"GET  /api/cache/stats/:deviceID",
+				"POST /api/process",
+				"GET  /api/files/:id",
 				"GET  /api/health",
 			},
 		})
@@ -162,8 +155,8 @@ func main() {
 		// Stop worker pool
 		workerPool.Stop()
 
-		// Stop cache cleanup
-		deviceCache.Stop()
+		// Stop temp storage cleanup
+		tempStorage.Stop()
 
 		// Shutdown Fiber
 		if err := app.Shutdown(); err != nil {

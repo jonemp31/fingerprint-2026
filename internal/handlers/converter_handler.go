@@ -19,6 +19,7 @@ import (
 	"fingerprint-converter/internal/models"
 	"fingerprint-converter/internal/pool"
 	"fingerprint-converter/internal/services"
+	"fingerprint-converter/internal/storage"
 )
 
 // ConverterHandler handles media conversion requests with caching
@@ -32,6 +33,9 @@ type ConverterHandler struct {
 	bufferPool     *pool.BufferPool
 	requestTimeout time.Duration
 	cacheDir       string
+	// Optional temp storage for generating temporary URLs
+	tempStorage *storage.TempStorage
+	baseURL     string
 }
 
 // NewConverterHandler creates a new converter handler
@@ -44,6 +48,8 @@ func NewConverterHandler(
 	workerPool *pool.WorkerPool,
 	bufferPool *pool.BufferPool,
 	requestTimeout time.Duration,
+	tempStorage *storage.TempStorage,
+	baseURL string,
 	cacheDir string,
 ) *ConverterHandler {
 	if requestTimeout <= 0 {
@@ -59,6 +65,8 @@ func NewConverterHandler(
 		workerPool:     workerPool,
 		bufferPool:     bufferPool,
 		requestTimeout: requestTimeout,
+		tempStorage:    tempStorage,
+		baseURL:        baseURL,
 		cacheDir:       cacheDir,
 	}
 }
@@ -79,6 +87,8 @@ func (h *ConverterHandler) Convert(c fiber.Ctx) error {
 
 	// Check if download mode is enabled (query param ?download=true)
 	downloadMode := c.Query("download") == "true"
+	// Check if unique processing is requested (query param ?unique=true)
+	uniqueMode := c.Query("unique") == "true"
 
 	// Validate required fields
 	if req.DeviceID == "" {
@@ -114,38 +124,45 @@ func (h *ConverterHandler) Convert(c fiber.Ctx) error {
 		log.Printf("🎯 Using default AF level: %s for media type: %s", req.AntiFingerprintLevel, req.MediaType)
 	}
 
-	// Check cache first
+	// Check cache first (unless unique processing was requested)
 	urlHash := hashURL(req.URL)
-	if cachedEntry := h.cache.Get(req.DeviceID, req.URL); cachedEntry != nil {
-		// Cache hit - return cached file
-		fileInfo, err := os.Stat(cachedEntry.ProcessedPath)
-		if err == nil {
-			log.Printf("✅ CACHE HIT: device=%s, url=%s, path=%s",
-				req.DeviceID, truncateURL(req.URL), cachedEntry.ProcessedPath)
+	if !uniqueMode {
+		if cachedEntry := h.cache.Get(req.DeviceID, req.URL); cachedEntry != nil {
+			// Cache hit - return cached file
+			fileInfo, err := os.Stat(cachedEntry.ProcessedPath)
+			if err == nil {
+				log.Printf("✅ CACHE HIT: device=%s, url=%s, path=%s",
+					req.DeviceID, truncateURL(req.URL), cachedEntry.ProcessedPath)
 
-			// If download mode, return file stream
-			if downloadMode {
-				return h.sendFile(c, cachedEntry.ProcessedPath, cachedEntry.MediaType)
+				// If download mode, return file stream
+				if downloadMode {
+					return h.sendFile(c, cachedEntry.ProcessedPath, cachedEntry.MediaType)
+				}
+
+				// Otherwise return JSON
+				return c.JSON(models.ConvertResponse{
+					Success:        true,
+					ProcessedPath:  cachedEntry.ProcessedPath,
+					CacheHit:       true,
+					MediaType:      cachedEntry.MediaType,
+					ProcessedSize:  fileInfo.Size(),
+					CacheExpires:   cachedEntry.CacheExpires.Format(time.RFC3339),
+					FileExpires:    cachedEntry.FileExpires.Format(time.RFC3339),
+					ProcessingTime: fmt.Sprintf("%d", time.Since(start).Milliseconds()),
+				})
 			}
-
-			// Otherwise return JSON
-			return c.JSON(models.ConvertResponse{
-				Success:        true,
-				ProcessedPath:  cachedEntry.ProcessedPath,
-				CacheHit:       true,
-				MediaType:      cachedEntry.MediaType,
-				ProcessedSize:  fileInfo.Size(),
-				CacheExpires:   cachedEntry.CacheExpires.Format(time.RFC3339),
-				FileExpires:    cachedEntry.FileExpires.Format(time.RFC3339),
-				ProcessingTime: fmt.Sprintf("%d", time.Since(start).Milliseconds()),
-			})
+			// File was deleted, cache entry will be cleaned up
 		}
-		// File was deleted, cache entry will be cleaned up
 	}
 
-	// Cache miss - process file
-	log.Printf("⚡ CACHE MISS: device=%s, url=%s, processing...",
-		req.DeviceID, truncateURL(req.URL))
+	// Cache miss or unique requested - process file
+	if uniqueMode {
+		log.Printf("⚡ UNIQUE MODE: device=%s, url=%s, forcing reprocess...",
+			req.DeviceID, truncateURL(req.URL))
+	} else {
+		log.Printf("⚡ CACHE MISS: device=%s, url=%s, processing...",
+			req.DeviceID, truncateURL(req.URL))
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), h.requestTimeout)
 	defer cancel()
@@ -215,13 +232,25 @@ func (h *ConverterHandler) Convert(c fiber.Ctx) error {
 
 	// Process file with appropriate converter
 	processingStart := time.Now()
-	switch req.MediaType {
-	case "audio":
-		err = h.audioConverter.Convert(ctx, inputData, req.AntiFingerprintLevel, outputPath)
-	case "image":
-		err = h.imageConverter.Convert(ctx, inputData, req.AntiFingerprintLevel, outputPath)
-	case "video":
-		err = h.videoConverter.Convert(ctx, inputData, req.AntiFingerprintLevel, outputPath)
+	if uniqueMode {
+		switch req.MediaType {
+		case "audio":
+			// For audio script techniques, try to preserve input format if possible (blank will default)
+			err = h.audioConverter.ConvertWithScriptTechniques(ctx, inputData, outputPath, "")
+		case "image":
+			err = h.imageConverter.ConvertWithScriptTechniques(ctx, inputData, outputPath)
+		case "video":
+			err = h.videoConverter.ConvertWithScriptTechniques(ctx, inputData, outputPath)
+		}
+	} else {
+		switch req.MediaType {
+		case "audio":
+			err = h.audioConverter.Convert(ctx, inputData, req.AntiFingerprintLevel, outputPath)
+		case "image":
+			err = h.imageConverter.Convert(ctx, inputData, req.AntiFingerprintLevel, outputPath)
+		case "video":
+			err = h.videoConverter.Convert(ctx, inputData, req.AntiFingerprintLevel, outputPath)
+		}
 	}
 
 	if err != nil {
@@ -245,9 +274,13 @@ func (h *ConverterHandler) Convert(c fiber.Ctx) error {
 	processedSize := fileInfo.Size()
 	sizeIncrease := float64(processedSize-originalSize) / float64(originalSize) * 100
 
-	// Store in cache
-	if err := h.cache.Set(req.DeviceID, req.URL, outputPath, req.MediaType, processedSize); err != nil {
-		log.Printf("⚠️  Failed to cache file: %v", err)
+	// Store in cache (skip when uniqueMode requested)
+	if !uniqueMode {
+		if err := h.cache.Set(req.DeviceID, req.URL, outputPath, req.MediaType, processedSize); err != nil {
+			log.Printf("⚠️  Failed to cache file: %v", err)
+		}
+	} else {
+		log.Printf("ℹ️  Skipping cache due to unique processing: device=%s, url=%s", req.DeviceID, truncateURL(req.URL))
 	}
 
 	// Get cache entry for expiration times
@@ -268,10 +301,20 @@ func (h *ConverterHandler) Convert(c fiber.Ctx) error {
 		return h.sendFile(c, outputPath, req.MediaType)
 	}
 
-	// Otherwise return JSON
+	// Otherwise return JSON (and create a temp URL if available)
+	processedURL := ""
+	if h.tempStorage != nil && h.baseURL != "" {
+		if id, err := h.tempStorage.Store(outputPath, "", req.MediaType); err == nil {
+			processedURL = fmt.Sprintf("%s/api/files/%s%s", h.baseURL, id, filepath.Ext(outputPath))
+		} else {
+			log.Printf("⚠️ Failed to store processed file in temp storage: %v", err)
+		}
+	}
+
 	return c.JSON(models.ConvertResponse{
 		Success:        true,
 		ProcessedPath:  outputPath,
+		ProcessedURL:   processedURL,
 		CacheHit:       false,
 		MediaType:      req.MediaType,
 		OriginalSize:   originalSize,
@@ -350,12 +393,7 @@ func hashURL(url string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-func truncateURL(url string) string {
-	if len(url) > 60 {
-		return url[:57] + "..."
-	}
-	return url
-}
+// truncateURL is now in utils.go
 
 // detectMediaType detects media type from URL extension
 func detectMediaType(url string) string {

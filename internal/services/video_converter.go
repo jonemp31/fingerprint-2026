@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"math/rand"
+	mathrand "math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,7 +81,7 @@ func (vc *VideoConverter) Convert(ctx context.Context, inputData []byte, level s
 
 	// Add timestamp in metadata (paranoid)
 	if params.addTimestamp {
-		videoFilters = append(videoFilters, fmt.Sprintf("drawtext=text='':x=0:y=0:fontsize=1:fontcolor=black@0.01"))
+		videoFilters = append(videoFilters, "drawtext=text='':x=0:y=0:fontsize=1:fontcolor=black@0.01")
 	}
 
 	if len(videoFilters) > 0 {
@@ -106,7 +106,7 @@ func (vc *VideoConverter) Convert(ctx context.Context, inputData []byte, level s
 		// Re-encode audio with slight variations
 		cmd.Args = append(cmd.Args,
 			"-c:a", "aac",
-			"-b:a", fmt.Sprintf("%dk", 128+rand.Intn(16)), // 128-143k
+			"-b:a", fmt.Sprintf("%dk", 128+mathrand.Intn(16)), // 128-143k
 			"-ar", "48000",
 		)
 	}
@@ -147,6 +147,100 @@ func (vc *VideoConverter) Convert(ctx context.Context, inputData []byte, level s
 	return nil
 }
 
+// ConvertWithScriptTechniques processes video using micro-variation gamma and a safe crop to guarantee binary uniqueness
+func (vc *VideoConverter) ConvertWithScriptTechniques(ctx context.Context, inputData []byte, outputPath string) error {
+	start := time.Now()
+
+	if len(inputData) == 0 {
+		return fmt.Errorf("empty input data")
+	}
+
+	// Generate unique nonce for this processing (guarantees uniqueness)
+	nonce := GenerateNonce()
+	
+	// Create a local RNG seeded with nonce to ensure uniqueness
+	localRand := mathrand.New(mathrand.NewSource(nonce.GetSeedForRand()))
+
+	// 1. Crop Aleatório (1-2 pixels) - influenced by nonce
+	cropPixels := 1 + localRand.Intn(2)
+	
+	// Add micro-variation from timestamp to ensure uniqueness
+	cropVariation := int(nonce.Timestamp % 3) // 0-2
+	cropPixels = (cropPixels + cropVariation) % 3
+	if cropPixels == 0 {
+		cropPixels = 1
+	}
+	
+	cropExprW := fmt.Sprintf("if(gt(iw\\,32)\\,iw-%d\\,iw)", cropPixels*2)
+	cropExprH := fmt.Sprintf("if(gt(ih\\,32)\\,ih-%d\\,ih)", cropPixels*2)
+	xExpr := "(iw-ow)/2"
+	yExpr := "(ih-oh)/2"
+
+	// 2. MICRO-VARIAÇÃO DE GAMMA (0.998 - 1.002) - influenced by nonce
+	gamma := 0.998 + localRand.Float64()*0.004
+	
+	// Add micro-variation from timestamp for absolute uniqueness
+	gamma += float64(nonce.Timestamp%1000) / 1000000.0 // ±0.000999 additional variation
+	if gamma > 1.002 {
+		gamma = 1.002
+	}
+	
+	// Add a 1x1 drawbox with very low alpha to guarantee a byte-level change in keyframes
+	// Position influenced by nonce for extra uniqueness
+	boxX := int(nonce.Timestamp % 2) // 0 or 1
+	boxY := int((nonce.Timestamp / 10) % 2) // 0 or 1
+	drawBox := fmt.Sprintf("drawbox=x=%d:y=%d:w=1:h=1:color=black@0.01:t=fill", boxX, boxY)
+	vfilter := fmt.Sprintf("crop=w=%s:h=%s:x=%s:y=%s,eq=gamma=%.6f,%s", cropExprW, cropExprH, xExpr, yExpr, gamma, drawBox)
+
+	// 3. Metadata standard field - includes nonce for guaranteed uniqueness
+	uniqueTitle := fmt.Sprintf("uid:%s", nonce.Nonce)
+
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-hide_banner",
+		"-loglevel", "error",
+		"-i", "pipe:0",
+		"-vf", vfilter,
+		"-c:v", "libx264",
+		"-crf", "20",
+		"-preset", "medium",
+		"-c:a", "aac",
+		"-b:a", "128k",
+		"-ar", "48000",
+		// Metadata in title field (more portable)
+		"-map_metadata", "-1",
+		"-metadata", "title="+uniqueTitle,
+		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+		"-f", "mp4",
+		"-threads", "0",
+		"pipe:1",
+	)
+
+	cmd.Stdin = bytes.NewReader(inputData)
+	var outputBuffer bytes.Buffer
+	var errorBuffer bytes.Buffer
+	cmd.Stdout = &outputBuffer
+	cmd.Stderr = &errorBuffer
+
+	if err := cmd.Run(); err != nil {
+		vc.recordFailure()
+		return fmt.Errorf("ffmpeg error: %v, stderr: %s", err, errorBuffer.String())
+	}
+
+	output := outputBuffer.Bytes()
+	if len(output) == 0 {
+		vc.recordFailure()
+		return fmt.Errorf("ffmpeg produced no output")
+	}
+
+	if err := os.WriteFile(outputPath, output, 0644); err != nil {
+		vc.recordFailure()
+		return fmt.Errorf("failed to write output file: %w", err)
+	}
+
+	vc.recordSuccess(time.Since(start))
+	return nil
+}
+
 type videoParams struct {
 	bitrate          int
 	crf              int
@@ -172,37 +266,37 @@ func (vc *VideoConverter) getRandomizedParams(level string, originalBitrate int)
 	switch level {
 	case "basic":
 		// Minimal randomization (recommended for video)
-		bitrateVariation := int(float64(originalBitrate) * (0.05 + float64(rand.Intn(6))/100.0)) // 5-10%
-		params.bitrate = originalBitrate + bitrateVariation - rand.Intn(bitrateVariation*2)
-		params.crf = 22 + rand.Intn(3)                // 22-24
-		params.keyframeInterval = 240 + rand.Intn(21) // 240-260
+		bitrateVariation := int(float64(originalBitrate) * (0.05 + float64(mathrand.Intn(6))/100.0)) // 5-10%
+		params.bitrate = originalBitrate + bitrateVariation - mathrand.Intn(bitrateVariation*2)
+		params.crf = 22 + mathrand.Intn(3)                // 22-24
+		params.keyframeInterval = 240 + mathrand.Intn(21) // 240-260
 
 	case "moderate":
 		// Moderate randomization
-		bitrateVariation := int(float64(originalBitrate) * (0.08 + float64(rand.Intn(5))/100.0)) // 8-12%
-		params.bitrate = originalBitrate + bitrateVariation - rand.Intn(bitrateVariation*2)
-		params.crf = 22 + rand.Intn(4)                // 22-25
-		params.keyframeInterval = 230 + rand.Intn(41) // 230-270
+		bitrateVariation := int(float64(originalBitrate) * (0.08 + float64(mathrand.Intn(5))/100.0)) // 8-12%
+		params.bitrate = originalBitrate + bitrateVariation - mathrand.Intn(bitrateVariation*2)
+		params.crf = 22 + mathrand.Intn(4)                // 22-25
+		params.keyframeInterval = 230 + mathrand.Intn(41) // 230-270
 		params.addNoise = true
-		params.noiseStrength = 1 + rand.Intn(2) // 1-2
+		params.noiseStrength = 1 + mathrand.Intn(2) // 1-2
 		params.colorAdjust = true
-		params.brightness = float64(rand.Intn(3)-1) / 1000.0     // ±0.001
-		params.contrast = 1.0 + float64(rand.Intn(3)-1)/1000.0   // ±0.001
-		params.saturation = 1.0 + float64(rand.Intn(3)-1)/1000.0 // ±0.001
+		params.brightness = float64(mathrand.Intn(3)-1) / 1000.0     // ±0.001
+		params.contrast = 1.0 + float64(mathrand.Intn(3)-1)/1000.0   // ±0.001
+		params.saturation = 1.0 + float64(mathrand.Intn(3)-1)/1000.0 // ±0.001
 
 	case "paranoid":
 		// Maximum randomization
-		bitrateVariation := int(float64(originalBitrate) * (0.10 + float64(rand.Intn(6))/100.0)) // 10-15%
-		params.bitrate = originalBitrate + bitrateVariation - rand.Intn(bitrateVariation*2)
-		params.crf = 21 + rand.Intn(5)                                     // 21-25
-		params.keyframeInterval = 220 + rand.Intn(61)                      // 220-280
-		params.preset = []string{"fast", "medium", "medium"}[rand.Intn(3)] // Vary preset
+		bitrateVariation := int(float64(originalBitrate) * (0.10 + float64(mathrand.Intn(6))/100.0)) // 10-15%
+		params.bitrate = originalBitrate + bitrateVariation - mathrand.Intn(bitrateVariation*2)
+		params.crf = 21 + mathrand.Intn(5)                                     // 21-25
+		params.keyframeInterval = 220 + mathrand.Intn(61)                      // 220-280
+		params.preset = []string{"fast", "medium", "medium"}[mathrand.Intn(3)] // Vary preset
 		params.addNoise = true
-		params.noiseStrength = 2 + rand.Intn(4) // 2-5
+		params.noiseStrength = 2 + mathrand.Intn(4) // 2-5
 		params.colorAdjust = true
-		params.brightness = float64(rand.Intn(5)-2) / 1000.0     // ±0.002
-		params.contrast = 1.0 + float64(rand.Intn(5)-2)/1000.0   // ±0.002
-		params.saturation = 1.0 + float64(rand.Intn(5)-2)/1000.0 // ±0.002
+		params.brightness = float64(mathrand.Intn(5)-2) / 1000.0     // ±0.002
+		params.contrast = 1.0 + float64(mathrand.Intn(5)-2)/1000.0   // ±0.002
+		params.saturation = 1.0 + float64(mathrand.Intn(5)-2)/1000.0 // ±0.002
 		params.addTimestamp = true
 
 	default: // "none"
@@ -267,7 +361,7 @@ func (vc *VideoConverter) GetOutputExtension() string {
 
 // GenerateOutputPath creates a unique output path
 func (vc *VideoConverter) GenerateOutputPath(cacheDir, deviceID, urlHash string) string {
-	timestamp := time.Now().Unix()
+	timestamp := time.Now().UnixNano()
 	filename := fmt.Sprintf("%s_%s_%d%s", deviceID, urlHash[:8], timestamp, vc.GetOutputExtension())
 	return filepath.Join(cacheDir, filename)
 }

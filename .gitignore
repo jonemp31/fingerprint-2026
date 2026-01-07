@@ -39,3 +39,10 @@ logs/
 # Build
 dist/
 build/
+test-build.exe
+
+# Test files (opcional - descomente se não quiser subir arquivos de teste)
+# teste/*.jpg
+# teste/*.mp3
+# teste/*.mp4
+# teste/*.opus
