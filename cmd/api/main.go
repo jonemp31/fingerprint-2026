@@ -62,7 +62,7 @@ func main() {
 	// Get base URL for file serving
 	baseURL := os.Getenv("BASE_URL")
 	if baseURL == "" {
-		baseURL = "http://localhost:4000"
+		baseURL = "http://localhost:9090"
 	}
 
 	// Initialize process handler

@@ -1,20 +1,22 @@
 # =======================================================
 # PORTAINER STACK - FINGERPRINT MEDIA CONVERTER v1.0
 # =======================================================
-# Cole este arquivo no Portainer > Stacks > Add Stack
+# Para Docker Windows:
+# 1. Copie este arquivo completo
+# 2. Portainer > Stacks > Add Stack
+# 3. Cole o conteúdo e clique em "Deploy the stack"
 # =======================================================
-
-version: '3.8'
 
 services:
   fingerprint-converter:
     image: jondevsouza31/fingerprint-converter:latest
     container_name: fingerprint-converter
     ports:
-      - "5001:5001"
+      - "9090:9090"
     environment:
       # Server Configuration
-      - PORT=5001
+      - PORT=9090
+      - BASE_URL=http://localhost:9090
       - APP_ENV=production
       - READ_TIMEOUT=5m
       - WRITE_TIMEOUT=5m
@@ -27,7 +29,7 @@ services:
       - BUFFER_POOL_SIZE=100
       - BUFFER_SIZE=10485760
       - REQUEST_TIMEOUT=5m
-      - DOWNLOAD_TIMEOUT=30s
+      - DOWNLOAD_TIMEOUT=2m
       - MAX_DOWNLOAD_SIZE=524288000
       
       # Cache Configuration (28/30 minutos)
@@ -52,35 +54,26 @@ services:
       - ENABLE_HEALTH_CHECK=true
       - ENABLE_STATS_ENDPOINT=true
     
-    # Volume persistente organizado por tipo de mídia
+    # Volume persistente para cache
     volumes:
       - fingerprint-data:/data/fingerprintconverter
     
-    restart: always
+    restart: unless-stopped
     
-    # Use a mesma rede da sua API Node.js
+    # Rede opcional (remova se não usar)
     networks:
-      - whatsapp-network
+      - app-network
     
-    # Limits de recursos (ajuste conforme sua VPS)
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 4G
-        reservations:
-          cpus: '2'
-          memory: 2G
-    
+    # Health check
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5001/api/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/api/health"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
 networks:
-  whatsapp-network:
+  app-network:
     driver: bridge
 
 volumes:
@@ -88,15 +81,16 @@ volumes:
     driver: local
 
 # =======================================================
-# ENDPOINTS DA API
+# ENDPOINTS DISPONÍVEIS
 # =======================================================
-# POST http://SEU_IP:5001/api/convert
-# GET  http://SEU_IP:5001/api/health
-# GET  http://SEU_IP:5001/api/cache/stats
-# GET  http://SEU_IP:5001/api/cache/stats/:deviceID
+# POST http://localhost:9090/api/convert - Converter mídia
+# POST http://localhost:9090/api/process - Processar com deviceID
+# GET  http://localhost:9090/api/health  - Health check
+# GET  http://localhost:9090/api/cache/stats - Estatísticas globais
+# GET  http://localhost:9090/api/cache/stats/:deviceID - Stats por device
 #
-# DOCUMENTAÇÃO COMPLETA:
-# https://github.com/jonemp31/fingerprint-converter
+# DOCUMENTAÇÃO: https://github.com/jonemp31/fingerprint-2026
+# DOCKER HUB: https://hub.docker.com/r/jondevsouza31/fingerprint-converter
 # =======================================================
 
 # =======================================================
