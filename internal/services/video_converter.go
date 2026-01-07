@@ -207,6 +207,7 @@ func (vc *VideoConverter) ConvertWithScriptTechniques(ctx context.Context, input
 	// 3. Metadata standard field - includes nonce for guaranteed uniqueness
 	uniqueTitle := fmt.Sprintf("uid:%s", nonce.Nonce)
 
+	// faststart requires seekable output, so write directly to file
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner",
 		"-loglevel", "error",
@@ -224,13 +225,11 @@ func (vc *VideoConverter) ConvertWithScriptTechniques(ctx context.Context, input
 		"-movflags", "+faststart", // WhatsApp compatibility - moov atom at start
 		"-f", "mp4",
 		"-threads", "0",
-		"pipe:1",
+		outputPath, // Write directly to output file (faststart needs seekable output)
 	)
 
-	// No longer need stdin since we're using temp file
-	var outputBuffer bytes.Buffer
+	// Capture only stderr for error reporting
 	var errorBuffer bytes.Buffer
-	cmd.Stdout = &outputBuffer
 	cmd.Stderr = &errorBuffer
 
 	if err := cmd.Run(); err != nil {
@@ -238,15 +237,10 @@ func (vc *VideoConverter) ConvertWithScriptTechniques(ctx context.Context, input
 		return fmt.Errorf("ffmpeg error: %v, stderr: %s", err, errorBuffer.String())
 	}
 
-	output := outputBuffer.Bytes()
-	if len(output) == 0 {
+	// Verify output file was created
+	if _, err := os.Stat(outputPath); err != nil {
 		vc.recordFailure()
-		return fmt.Errorf("ffmpeg produced no output")
-	}
-
-	if err := os.WriteFile(outputPath, output, 0644); err != nil {
-		vc.recordFailure()
-		return fmt.Errorf("failed to write output file: %w", err)
+		return fmt.Errorf("output file not created: %w", err)
 	}
 
 	vc.recordSuccess(time.Since(start))
