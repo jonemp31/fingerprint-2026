@@ -29,18 +29,18 @@ type Config struct {
 	BufferSize     int
 
 	// Cache configuration
-	CacheDir     string
-	CacheTTL     time.Duration // 28 minutes
-	FileTTL      time.Duration // 30 minutes
-	EnableCache  bool
+	CacheDir    string
+	CacheTTL    time.Duration // 28 minutes
+	FileTTL     time.Duration // 30 minutes
+	EnableCache bool
 
 	// Performance tuning
 	GOGC       int
 	GoMemLimit string
 
 	// Download settings
-	DownloadTimeout     time.Duration
-	MaxDownloadSize     int64
+	DownloadTimeout time.Duration
+	MaxDownloadSize int64
 
 	// Anti-fingerprint settings
 	DefaultAFLevel string // none/basic/moderate/paranoid
@@ -98,8 +98,8 @@ func Load() *Config {
 		GoMemLimit: getEnv("GOMEMLIMIT", "2GiB"),
 
 		// Download settings
-		DownloadTimeout: getDuration("DOWNLOAD_TIMEOUT", 30*time.Second),
-		MaxDownloadSize: getInt64("MAX_DOWNLOAD_SIZE", 500*1024*1024), // 500MB
+		DownloadTimeout: getDuration("DOWNLOAD_TIMEOUT", 2*time.Minute), // Aumentado para 2min (vídeos grandes)
+		MaxDownloadSize: getInt64("MAX_DOWNLOAD_SIZE", 500*1024*1024),   // 500MB
 
 		// Anti-fingerprint settings
 		DefaultAFLevel: getEnv("DEFAULT_AF_LEVEL", "moderate"),

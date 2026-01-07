@@ -8,11 +8,6 @@ import (
 	"time"
 )
 
-// Seed RNG once per process to ensure randomness across converters
-func init() {
-	mathrand.Seed(time.Now().UnixNano())
-}
-
 // ProcessingNonce represents a unique identifier for each processing operation
 type ProcessingNonce struct {
 	Timestamp int64

@@ -155,22 +155,34 @@ func (vc *VideoConverter) ConvertWithScriptTechniques(ctx context.Context, input
 		return fmt.Errorf("empty input data")
 	}
 
+	// Validate MP4 integrity before processing
+	if err := validateMP4Integrity(inputData); err != nil {
+		return fmt.Errorf("invalid MP4 file: %w", err)
+	}
+
+	// Save to temporary file first (workaround for pipe issues with some MP4 files)
+	tempInput := outputPath + ".input.mp4"
+	if err := os.WriteFile(tempInput, inputData, 0644); err != nil {
+		return fmt.Errorf("failed to write temp input: %w", err)
+	}
+	defer os.Remove(tempInput)
+
 	// Generate unique nonce for this processing (guarantees uniqueness)
 	nonce := GenerateNonce()
-	
+
 	// Create a local RNG seeded with nonce to ensure uniqueness
 	localRand := mathrand.New(mathrand.NewSource(nonce.GetSeedForRand()))
 
 	// 1. Crop Aleatório (1-2 pixels) - influenced by nonce
 	cropPixels := 1 + localRand.Intn(2)
-	
+
 	// Add micro-variation from timestamp to ensure uniqueness
 	cropVariation := int(nonce.Timestamp % 3) // 0-2
 	cropPixels = (cropPixels + cropVariation) % 3
 	if cropPixels == 0 {
 		cropPixels = 1
 	}
-	
+
 	cropExprW := fmt.Sprintf("if(gt(iw\\,32)\\,iw-%d\\,iw)", cropPixels*2)
 	cropExprH := fmt.Sprintf("if(gt(ih\\,32)\\,ih-%d\\,ih)", cropPixels*2)
 	xExpr := "(iw-ow)/2"
@@ -178,16 +190,16 @@ func (vc *VideoConverter) ConvertWithScriptTechniques(ctx context.Context, input
 
 	// 2. MICRO-VARIAÇÃO DE GAMMA (0.998 - 1.002) - influenced by nonce
 	gamma := 0.998 + localRand.Float64()*0.004
-	
+
 	// Add micro-variation from timestamp for absolute uniqueness
 	gamma += float64(nonce.Timestamp%1000) / 1000000.0 // ±0.000999 additional variation
 	if gamma > 1.002 {
 		gamma = 1.002
 	}
-	
+
 	// Add a 1x1 drawbox with very low alpha to guarantee a byte-level change in keyframes
 	// Position influenced by nonce for extra uniqueness
-	boxX := int(nonce.Timestamp % 2) // 0 or 1
+	boxX := int(nonce.Timestamp % 2)        // 0 or 1
 	boxY := int((nonce.Timestamp / 10) % 2) // 0 or 1
 	drawBox := fmt.Sprintf("drawbox=x=%d:y=%d:w=1:h=1:color=black@0.01:t=fill", boxX, boxY)
 	vfilter := fmt.Sprintf("crop=w=%s:h=%s:x=%s:y=%s,eq=gamma=%.6f,%s", cropExprW, cropExprH, xExpr, yExpr, gamma, drawBox)
@@ -198,7 +210,7 @@ func (vc *VideoConverter) ConvertWithScriptTechniques(ctx context.Context, input
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner",
 		"-loglevel", "error",
-		"-i", "pipe:0",
+		"-i", tempInput, // Use temp file instead of pipe for better compatibility
 		"-vf", vfilter,
 		"-c:v", "libx264",
 		"-crf", "20",
@@ -215,7 +227,7 @@ func (vc *VideoConverter) ConvertWithScriptTechniques(ctx context.Context, input
 		"pipe:1",
 	)
 
-	cmd.Stdin = bytes.NewReader(inputData)
+	// No longer need stdin since we're using temp file
 	var outputBuffer bytes.Buffer
 	var errorBuffer bytes.Buffer
 	cmd.Stdout = &outputBuffer
@@ -364,4 +376,54 @@ func (vc *VideoConverter) GenerateOutputPath(cacheDir, deviceID, urlHash string)
 	timestamp := time.Now().UnixNano()
 	filename := fmt.Sprintf("%s_%s_%d%s", deviceID, urlHash[:8], timestamp, vc.GetOutputExtension())
 	return filepath.Join(cacheDir, filename)
+}
+
+// validateMP4Integrity performs basic integrity checks on MP4 data
+func validateMP4Integrity(data []byte) error {
+	if len(data) < 32 {
+		return fmt.Errorf("file too small: %d bytes", len(data))
+	}
+
+	// Check for ftyp box (file type box) - must be present in valid MP4
+	// Format: [size:4 bytes][type:4 bytes][major_brand:4 bytes][minor_version:4 bytes]
+	// ftyp box should appear early in the file (usually at offset 0 or after a few bytes)
+	hasFtyp := false
+	hasModat := false
+
+	// Scan first 256 bytes for ftyp
+	scanLimit := 256
+	if len(data) < scanLimit {
+		scanLimit = len(data)
+	}
+
+	for i := 0; i < scanLimit-8; i++ {
+		// Check for "ftyp" signature (0x66747970)
+		if data[i] == 0x66 && data[i+1] == 0x74 && data[i+2] == 0x79 && data[i+3] == 0x70 {
+			hasFtyp = true
+			break
+		}
+	}
+
+	if !hasFtyp {
+		return fmt.Errorf("missing ftyp box - file may be corrupted or not a valid MP4")
+	}
+
+	// Check for mdat (media data) or moov (movie metadata) boxes
+	// These are essential boxes in MP4 files
+	for i := 0; i < len(data)-8; i++ {
+		// Check for "mdat" (0x6D646174) or "moov" (0x6D6F6F76)
+		if i+4 < len(data) {
+			if (data[i] == 0x6D && data[i+1] == 0x64 && data[i+2] == 0x61 && data[i+3] == 0x74) ||
+				(data[i] == 0x6D && data[i+1] == 0x6F && data[i+2] == 0x6F && data[i+3] == 0x76) {
+				hasModat = true
+				break
+			}
+		}
+	}
+
+	if !hasModat {
+		return fmt.Errorf("missing mdat/moov box - file may be truncated or corrupted")
+	}
+
+	return nil
 }
